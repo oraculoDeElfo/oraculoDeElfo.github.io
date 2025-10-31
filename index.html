@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Oraculo de Elfos</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+    <style>
+       @font-face {
+        font-family: 'ElColgado';
+        src:   url('/PirataOne-Regular.ttf') format('truetype');
+        font-weight: 400 700;
+        font-style: normal;
+        font-display: swap;
+      }
+      html,body { height:100%; margin:0; background:#000; overflow:hidden; }
+      canvas#bg { position:fixed; inset:0; width:100%; height:100%; display:block; z-index:0; }
+      /* Contenido de la página encima del fondo */
+      .content { position:relative; z-index:2; color:#9482ad; text-align:center; padding-top:4rem; font-family:system-ui,Segoe UI,Roboto,Arial; }
+      .content h1 {
+        font-family: 'ElColgado', serif;
+        font-weight: 700;
+        font-size: clamp(1.6rem, 4vw, 3.2rem);
+        letter-spacing: 0.6px;
+        margin-bottom: 0.5rem;
+        text-shadow: 2 6px 18px rgba(17, 22, 68, 0.6);
+      }
+
+      /* Tarjeta de pregunta con la misma fuente y fondo lila semitransparente */
+      .question-card {
+        background: rgba(166,125,230,0.85); /* lila semitransparente */
+        color: #fff;
+        font-family: 'ElColgado', serif;
+        border: none;
+        box-shadow: 0 8px 30px rgba(90,50,140,0.35);
+      }
+      .question-card .card-body { padding: 1rem 1.25rem; }
+      .question-card .card-text {
+        color: #fff;
+        margin-bottom: 0.75rem;
+        font-size: 1.15rem;
+        line-height: 1.2;
+      }
+      .question-card .form-control {
+        background: rgba(255,255,255,0.06);
+        color: #fff;
+        border: 1px solid rgba(255,255,255,0.14);
+        resize: vertical;
+      }
+      .question-card .form-control::placeholder { color: rgba(255,255,255,0.85); }
+      .question-card .btn-primary {
+        background: #5e3fb8;
+        border-color: #5e3fb8;
+        box-shadow: none;
+      }
+
+      /* asegurar que controles estén encima del canvas */
+      #questions, #startPrompt { position: relative; z-index: 3; }
+
+      /* sufijo que seguirá al cursor y prefijo fijo al inicio */
+      .question-wrapper { position: relative; }
+      .question-wrapper textarea {
+        padding-right: 3.5rem; /* espacio para sufijo */
+        padding-left: 2.2rem;  /* espacio para prefijo "¿" */
+        position: relative;
+        z-index: 1;
+        background: rgba(255,255,255,0.06);
+        color: #fff;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+      .question-suffix {
+        position: absolute;
+        pointer-events: none;
+        color: rgba(255,255,255,0.95);
+        font-family: 'ElColgado', serif;
+        font-size: 1.15rem;
+        line-height: 1;
+        user-select: none;
+        text-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        z-index: 20;
+        transition: opacity .08s ease;
+      }
+      .question-suffix.hidden { opacity: 0; }
+
+      .question-prefix {
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        pointer-events: none;
+        color: rgba(255,255,255,0.95);
+        font-family: 'ElColgado', serif;
+        font-size: 1.15rem;
+        user-select: none;
+        z-index: 20;
+        text-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="bg"></canvas>
+
+   <div class="content">
+      <h1>Bienvenida al oráculo de Elfos</h1>
+      <img src="ElColgado.jpg" alt="El Colgado" class="img-fluid d-block mx-auto" style="max-width:60%;height:auto;border-radius:8px;margin-top:1rem;box-shadow:0 6px 24px rgba(0,0,0,0.6);">
+
+      <div id="startPrompt" class="btn btn-outline-light mt-3" role="button" style="cursor:pointer;display:inline-block;position:relative;z-index:3;">
+        comienzo a preguntarte
+      </div>
+
+      <div id="questions" class="mt-4" style="max-width:720px;margin:1.5rem auto 0;position:relative;z-index:3;"></div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
+    
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const START = document.getElementById('startPrompt');
+        const QUESTIONS_EL = document.getElementById('questions');
+
+        const QUESTIONS_URL = '/preguntas.json'; 
+        let questions = [];
+        let used = new Set();
+
+        // fallback de ejemplo si no hay archivo externo
+        const FALLBACK = [
+          "¿Cuál es tu pregunta más frecuente?",
+          "¿Qué te trae aquí hoy?",
+          "¿Qué te gustaría cambiar?",
+          "¿Cuál es tu sueño más extraño?",
+          "¿Qué pregunta no te atreves a hacer?"
+        ];
+
+        async function loadQuestions() {
+          try {
+            const res = await fetch(QUESTIONS_URL, {cache: "no-store"});
+            if (!res.ok) throw new Error('no json');
+            const data = await res.json();
+            if (Array.isArray(data) && data.length) {
+              questions = data;
+              return;
+            }
+          } catch (e) {
+            // usar fallback
+            questions = FALLBACK.slice();
+          }
+        }
+
+        function getRandomQuestion() {
+          if (!questions.length) questions = FALLBACK.slice();
+          if (used.size >= questions.length) used.clear(); // reiniciar cuando se agotan
+          let idx;
+          do {
+            idx = Math.floor(Math.random() * questions.length);
+          } while (used.has(idx) && used.size < questions.length);
+          used.add(idx);
+          return questions[idx];
+        }
+
+            function saveAnswer(payload) {
+          // { changed code: enviar como application/x-www-form-urlencoded }
+          const GAS_URL = 'https://script.google.com/macros/s/AKfycbwQPSaW7MTS1gcC_xwIwQx44vDU-ljkZRowQeGTNPF7r1hOvMFHppeKoRzk2kViRT3_ag/exec';
+          (async () => {
+            try {
+              const body = new URLSearchParams();
+              body.append('question', payload.question || '');
+              body.append('answer', payload.answer || '');
+              body.append('ts', String(payload.ts || Date.now()));
+              const res = await fetch(GAS_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body.toString(),
+                mode: 'cors'
+              });
+              const text = await res.text();
+              console.log('GAS status', res.status, 'body:', text);
+              let json;
+              try { json = JSON.parse(text); } catch(e) { json = null; }
+              if (res.ok && json && json.ok) {
+                console.log('respuesta enviada a Google Sheets');
+                return;
+              }
+              throw new Error('Respuesta inválida del servidor');
+            } catch (err) {
+              // fallback: guardar localmente si falla la petición
+              try {
+                const key = 'oraculo_answers';
+                const arr = JSON.parse(localStorage.getItem(key) || '[]');
+                arr.push(Object.assign({ savedLocal: true }, payload));
+                localStorage.setItem(key, JSON.stringify(arr));
+              } catch (e) { /* ignore */ }
+              console.warn('No se pudo enviar a Sheets, guardado localmente:', err);
+            }
+          })();
+        }
+            function createQuestionForm(text) {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'card question-card mb-3';
+          wrapper.innerHTML = `
+            <div class="card-body">
+              <p class="card-text">${text}</p>
+              <form class="question-form">
+                <div class="question-wrapper" style="position:relative;">
+                  <span class="question-prefix">¿</span>
+                  <textarea class="form-control mb-2" rows="3" required placeholder="Escribí tu pregunta"></textarea>
+                  <span class="question-suffix hidden">?</span>
+                </div>
+                <div class="d-flex justify-content-end gap-2">
+                  <button type="submit" class="btn btn-primary btn-sm">Enviar</button>
+                </div>
+              </form>
+            </div>
+          `;
+          const form = wrapper.querySelector('.question-form');
+          const textarea = form.querySelector('textarea');
+          const suffix = wrapper.querySelector('.question-suffix');
+          const btn = form.querySelector('button');
+
+          // util: escapar HTML para el mirror
+          function escHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'\n'); }
+
+          // getCaretCoords (deja la implementación que ya tienes, debe seguir funcionando)
+          function getCaretCoords(ta, position) {
+            const style = getComputedStyle(ta);
+            const taRect = ta.getBoundingClientRect();
+
+            const div = document.createElement('div');
+            div.style.position = 'absolute';
+            div.style.visibility = 'hidden';
+            div.style.whiteSpace = 'pre-wrap';
+            div.style.wordWrap = 'break-word';
+            div.style.boxSizing = style.boxSizing;
+            div.style.width = (ta.clientWidth) + 'px';
+
+            div.style.paddingTop = style.paddingTop;
+            div.style.paddingRight = style.paddingRight;
+            div.style.paddingBottom = style.paddingBottom;
+            div.style.paddingLeft = style.paddingLeft;
+            div.style.borderTopWidth = style.borderTopWidth;
+            div.style.borderRightWidth = style.borderRightWidth;
+            div.style.borderBottomWidth = style.borderBottomWidth;
+            div.style.borderLeftWidth = style.borderLeftWidth;
+
+            div.style.fontFamily = style.fontFamily;
+            div.style.fontSize = style.fontSize;
+            div.style.fontWeight = style.fontWeight;
+            div.style.lineHeight = style.lineHeight;
+            div.style.letterSpacing = style.letterSpacing;
+            div.style.textTransform = style.textTransform;
+            div.style.wordBreak = 'break-word';
+
+            div.style.left = (taRect.left + window.scrollX) + 'px';
+            div.style.top = (taRect.top + window.scrollY) + 'px';
+
+            function escHtmlLocal(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+            const text = ta.value.substring(0, position);
+            const html = escHtmlLocal(text).replace(/ {2}/g, ' &nbsp;').replace(/\n/g, '<br/>');
+            div.innerHTML = html;
+
+            const span = document.createElement('span');
+            span.textContent = '\u200b';
+            div.appendChild(span);
+
+            document.body.appendChild(div);
+
+            div.scrollTop = ta.scrollTop;
+            div.scrollLeft = ta.scrollLeft;
+
+            const spanOffsetTop = span.offsetTop;
+            const spanOffsetLeft = span.offsetLeft;
+
+            document.body.removeChild(div);
+
+            const left = spanOffsetLeft - ta.scrollLeft;
+            const top = spanOffsetTop - ta.scrollTop;
+
+            return { top, left, taRect };
+          }
+
+          function updateSuffixPosition() {
+            if (document.activeElement !== textarea) {
+              suffix.classList.add('hidden');
+              return;
+            }
+            const pos = textarea.selectionStart;
+            const coords = getCaretCoords(textarea, pos);
+            const wrapperRect = wrapper.getBoundingClientRect();
+            const taRect = coords.taRect;
+            const left = taRect.left - wrapperRect.left + coords.left + 2;
+            const top = taRect.top - wrapperRect.top + coords.top - 2;
+            suffix.style.left = `${left}px`;
+            suffix.style.top = `${top}px`;
+            suffix.classList.remove('hidden');
+          }
+
+          // eventos que actualizan posición
+          textarea.addEventListener('input', updateSuffixPosition);
+          textarea.addEventListener('keydown', () => setTimeout(updateSuffixPosition, 0));
+          textarea.addEventListener('click', updateSuffixPosition);
+          textarea.addEventListener('keyup', updateSuffixPosition);
+          textarea.addEventListener('scroll', updateSuffixPosition);
+          textarea.addEventListener('focus', updateSuffixPosition);
+          textarea.addEventListener('blur', () => suffix.classList.add('hidden'));
+          setTimeout(updateSuffixPosition, 0);
+
+          form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            let answer = textarea.value.trim();
+            if (!answer) return;
+
+            // eliminar visuales de apertura/cierre antes de guardar
+            answer = answer.replace(/^¿+/u, '').replace(/\?+$/u, '').trim();
+            if (!answer) return;
+
+            saveAnswer({ question: text, answer, ts: Date.now() });
+
+            wrapper.remove();
+            appendRandomQuestion();
+          });
+
+          return wrapper;
+        }
+         
+
+          function appendRandomQuestion() {
+          // limpiar contenedor para que no queden preguntas previas
+          QUESTIONS_EL.innerHTML = '';
+          const q = getRandomQuestion();
+          const node = createQuestionForm(q);
+          QUESTIONS_EL.appendChild(node);
+          node.scrollIntoView({behavior:'smooth', block:'center'});
+        }
+
+        START.addEventListener('click', async () => {
+          START.classList.add('disabled');
+          START.setAttribute('aria-disabled', 'true');
+          START.textContent = 'preguntando...';
+          await loadQuestions();
+          // primera pregunta
+          appendRandomQuestion();
+          START.style.display = 'none';
+        });
+      });
+    </script>
+ 
+    <script>
+      // Parámetros editables
+      const COUNT = 120;           // cuántas "estrellas"
+      const SIZE_MIN = 5;         // tamaño mínimo de la "?"
+      const SIZE_MAX = 50;         // tamaño máximo
+      const SPEED_MIN = 10;        // velocidad mínima (px/seg)
+      const SPEED_MAX = 80;        // velocidad máxima
+      const COLORS = ['#A077E6','#7795E6','#7C77E6','#77B8E6','#C5C4E6']; // tonos
+
+      const canvas = document.getElementById('bg');
+      const ctx = canvas.getContext('2d');
+
+      let w=0,h=0, particles=[];
+
+      function resize(){
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
+        w = canvas.width = Math.floor(innerWidth * dpr);
+        h = canvas.height = Math.floor(innerHeight * dpr);
+        canvas.style.width = innerWidth + 'px';
+        canvas.style.height = innerHeight + 'px';
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+      }
+      window.addEventListener('resize', resize, {passive:true});
+      resize();
+
+      function rand(a,b){ return a + Math.random()*(b-a); }
+
+      function init(){
+        particles = [];
+        for(let i=0;i<COUNT;i++){
+          const size = rand(SIZE_MIN, SIZE_MAX);
+          particles.push({
+            x: Math.random()*innerWidth,
+            y: Math.random()*innerHeight,
+            vx: rand(-20,20),            // ligera deriva horizontal
+            vy: -rand(SPEED_MIN,SPEED_MAX) / 60, // subir (negativo) en px/frame aproximado
+            size,
+            color: COLORS[Math.floor(Math.random()*COLORS.length)],
+            alpha: rand(0.4,1),
+            twinkleSpeed: rand(0.002,0.02),
+            angle: rand(-0.2,0.2)
+          });
+        }
+      }
+
+      function drawQuestion(p, t){
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(1, p.alpha + Math.sin(t * p.twinkleSpeed*100) * 0.35));
+        ctx.fillStyle = p.color;
+        // sombra y brillo
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = Math.max(6, p.size/4);
+        ctx.font = `bold ${p.size}px serif`;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.angle);
+        ctx.fillText('?', 0, 0);
+        ctx.restore();
+      }
+
+      let last = performance.now();
+      function frame(now){
+        const dt = Math.min(40, now - last); // ms
+        last = now;
+        ctx.clearRect(0,0,innerWidth,innerHeight);
+        // ligero fondo nebuloso con gradiente (opcional)
+        const g = ctx.createLinearGradient(0,0,0,innerHeight);
+        g.addColorStop(0, 'rgba(2,6,23,0.2)');
+        g.addColorStop(1, 'rgba(0,0,0,0.5)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0,0,innerWidth,innerHeight);
+
+        for(const p of particles){
+          // movimiento
+          p.x += p.vx * (dt/1000);
+          p.y += p.vy * (dt/1000);
+
+          // rotación suave
+          p.angle += 0.002 * (p.vx>0?1:-1);
+
+          // re-aparecer al salir (vienen desde abajo hacia arriba)
+          if(p.y < -50){
+            p.y = innerHeight + rand(0,100);
+            p.x = Math.random()*innerWidth;
+            p.vx = rand(-20,20);
+            p.vy = -rand(SPEED_MIN,SPEED_MAX) / 60;
+            p.size = rand(SIZE_MIN, SIZE_MAX);
+            p.color = COLORS[Math.floor(Math.random()*COLORS.length)];
+            p.alpha = rand(0.4,1);
+          }
+          // ligero wrap horizontal
+          if(p.x < -100) p.x = innerWidth + 50;
+          if(p.x > innerWidth + 100) p.x = -50;
+
+          drawQuestion(p, now/1000);
+        }
+
+        requestAnimationFrame(frame);
+      }
+
+      // reiniciar en pixel ratio distinto o al comenzar
+      window.addEventListener('load', () => {
+        init();
+        last = performance.now();
+        requestAnimationFrame(frame);
+      });
+    </script>
+  </body>
+</html>
